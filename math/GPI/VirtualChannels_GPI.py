@@ -52,7 +52,7 @@ class ExternalNode(gpi.NodeAPI):
                 mtx_xy = 1.25*float(param['spFOVXY'][0])/float(param['spRESXY'][0])
                 self.setAttr('mtx', quietval = mtx_xy)
             if 'spDYN_GOLDANGLE_ON' in param:
-                if param['spDYN_GOLDANGLE_ON'] == 1:
+                if int(param['spDYN_GOLDANGLE_ON'][0]) == 1:
                     self.setAttr('# golden angle dynamics for csm', visible=True)
                     self.setAttr('# golden angle dynamics for csm', max=coords.shape[-3])
                 else:
@@ -189,7 +189,7 @@ class ExternalNode(gpi.NodeAPI):
                     is_GoldenAngle_data = False
                 if param is not None:
                     if 'spDYN_GOLDANGLE_ON' in param:
-                        if param['spDYN_GOLDANGLE_ON'] == 1:
+                        if int(param['spDYN_GOLDANGLE_ON'][0]) == 1:
                             is_GoldenAngle_data = True
                         else:
                             is_GoldenAngle_data = False
