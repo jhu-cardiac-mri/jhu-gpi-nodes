@@ -12,6 +12,7 @@ class ExternalNode(gpi.NodeAPI):
 
     def initUI(self):
         # Widgets
+        self.addWidget('SpinBox', 'mtx', val=300, min=1)
         self.addWidget('DisplayBox', 'image', interp=True, ann_box='Pointer')
         self.addWidget('Slider', 'image ceiling',val=60)
         self.addWidget('Slider', 'crop left')
@@ -20,53 +21,98 @@ class ExternalNode(gpi.NodeAPI):
         self.addWidget('Slider', 'crop bottom')
         self.addWidget('PushButton', 'compute', toggle=True)
         self.addWidget('SpinBox', 'virtual channels', immediate=True, val=12)
+        self.addWidget('Slider', 'Autocalibration Width (%)', val=10, min=0, max=100)
+        self.addWidget('Slider', 'Autocalibration Taper (%)', val=50, min=0, max=100)
+        self.addWidget('Slider', 'Mask Floor (% of max mag)', val=5, min=0, max=100)
+        self.addWidget('Slider', '# golden angle dynamics for csm', val=150, min=0, max=1000)
+        self.addWidget('PushButton', 'Dynamic data - average all dynamics for csm', toggle=True, button_title='ON', val=1)
         
 
         # IO Ports
         self.addInPort('data', 'NPYarray', dtype=[np.complex64, np.complex128], obligation=gpi.REQUIRED)
         self.addInPort('noise', 'NPYarray', dtype=[np.complex64, np.complex128], obligation=gpi.REQUIRED)
-        self.addInPort('sensitivity map', 'NPYarray', dtype=[np.complex64, np.complex128], obligation=gpi.REQUIRED)
+        self.addInPort('coords', 'NPYarray', dtype=[np.float32, np.float64], obligation=gpi.OPTIONAL)
+        self.addInPort('weights', 'NPYarray', dtype=[np.float32, np.float64], obligation=gpi.OPTIONAL)
+        self.addInPort('sensitivity map', 'NPYarray', dtype=[np.complex64, np.complex128], obligation=gpi.OPTIONAL)
+        self.addInPort('params_in', 'DICT', obligation = gpi.OPTIONAL)
 
         self.addOutPort('compressed data', 'NPYarray')
         self.addOutPort('A', 'NPYarray')
         self.addOutPort('noise covariance', 'NPYarray')
-        self.addOutPort('masked and normalized sense map')
+        self.addOutPort('masked and normalized sense map', 'NPYarray')
+        self.addOutPort('sum of square image', 'NPYarray')
+
     
     def validate(self):
-        sense_map = self.getData('sensitivity map')
-        if ( len(self.portEvents() ) > 0 ):
-            self.setAttr('crop left', max=sense_map.shape[-1], min=1)
-            self.setAttr('crop right', max=sense_map.shape[-1], min=1)
-            self.setAttr('crop top', max=sense_map.shape[-2], min=1)
-            self.setAttr('crop bottom', max=sense_map.shape[-2], min=1)
+        data=self.getData('data')
+        coords=self.getData('coords')
+        param = self.getData('params_in')
+        if param is not None:
+            if ( ('spFOVXY' in param) and ('spRESXY' in param) ):
+                mtx_xy = 1.25*float(param['spFOVXY'][0])/float(param['spRESXY'][0])
+                self.setAttr('mtx', quietval = mtx_xy)
+            if 'spDYN_GOLDANGLE_ON' in param:
+                if param['spDYN_GOLDANGLE_ON'] == 1:
+                    self.setAttr('# golden angle dynamics for csm', visible=True)
+                    self.setAttr('# golden angle dynamics for csm', max=coords.shape[-3])
+                else:
+                    self.setAttr('# golden angle dynamics for csm', visible=False)
+        else:
+            self.setAttr('# golden angle dynamics for csm', visible=True)
+            self.setAttr('# golden angle dynamics for csm', max=coords.shape[-3])
+        
+        self.log.debug("validate VirtualChannels - check csm")
+        csm = self.getData('sensitivity map')
+        if csm is None:
+            self.setAttr('Autocalibration Width (%)', visible=True)
+            self.setAttr('Autocalibration Taper (%)', visible=True)
+            self.setAttr('Mask Floor (% of max mag)', visible=True)
+            if data.ndim > 3:
+                self.setAttr('Dynamic data - average all dynamics for csm', visible=True)
+            else:
+                self.setAttr('Dynamic data - average all dynamics for csm', visible=False)
+            UI_width = self.getVal('Autocalibration Width (%)')
+            csm_mtx = np.int(0.01 * UI_width * self.getVal('mtx'))
+        else:
+            self.setAttr('Autocalibration Width (%)', visible=False)
+            self.setAttr('Autocalibration Taper (%)', visible=False)
+            self.setAttr('Mask Floor (% of max mag)', visible=False)
+            self.setAttr('Dynamic data - average all dynamics for csm', visible=False)
+            csm_mtx = csm.shape[-1]
+        
+        if ( (len(self.portEvents() ) > 0) or ('Autocalibration Width (%)' in self.widgetEvents()) ):
+            self.setAttr('crop left', max=csm_mtx, min=1)
+            self.setAttr('crop right', max=csm_mtx, min=1)
+            self.setAttr('crop top', max=csm_mtx, min=1)
+            self.setAttr('crop bottom', max=csm_mtx, min=1)
         if 'crop left' in self.widgetEvents():
             value_below = self.getVal('crop left')
             value_above = self.getVal('crop right')
-            if value_below == sense_map.shape[-1]:
-                self.setAttr('crop left', val=sense_map.shape[-1]-1)
+            if value_below == csm_mtx:
+                self.setAttr('crop left', quietval=csm_mtx-1)
             if value_above <= value_below:
-                self.setAttr('crop right', val=value_below+1)
+                self.setAttr('crop right', quietval=value_below+1)
         if 'crop right' in self.widgetEvents():
             value_below = self.getVal('crop left')
             value_above = self.getVal('crop right')
             if value_above == 1:
-                self.setAttr('crop right', val=2)
+                self.setAttr('crop right', quietval=2)
             if value_above <= value_below:
-                self.setAttr('crop left', val=value_above-1)
+                self.setAttr('crop left', quietval=value_above-1)
         if 'crop top' in self.widgetEvents():
             value_below = self.getVal('crop top')
             value_above = self.getVal('crop bottom')
-            if value_below == sense_map.shape[-2]:
-                self.setAttr('crop top', val=sense_map.shape[-2]-1)
+            if value_below == csm_mtx:
+                self.setAttr('crop top', quietval=csm_mtx-1)
             if value_above <= value_below:
-                self.setAttr('crop bottom', val=value_below+1)
+                self.setAttr('crop bottom', quietval=value_below+1)
         if 'crop bottom' in self.widgetEvents():
             value_below = self.getVal('crop top')
             value_above = self.getVal('crop bottom')
             if value_above == 1:
-                self.setAttr('crop bottom', val=2)
+                self.setAttr('crop bottom', quietval=2)
             if value_above <= value_below:
-                self.setAttr('crop top', val=value_above-1)
+                self.setAttr('crop top', quietval=value_above-1)
 
     def compute(self):
         import numpy as np
@@ -85,27 +131,156 @@ class ExternalNode(gpi.NodeAPI):
         m = self.getVal('virtual channels')
 
         # GETTING PORT INFO
-        data = self.getData('data')
+        data = self.getData('data').astype(np.complex64, copy=False)
         noise = self.getData('noise')
         sensitivity_map_uncropped = self.getData('sensitivity map')
+        param = self.getData('params_in')
         
-        
+        # set dimensions
+        nr_points = data.shape[-1]
+        nr_arms = data.shape[-2]
+        nr_coils = data.shape[0]
+        if data.ndim == 3:
+            extra_dim1 = 1
+            extra_dim2 = 1
+            data.shape = [nr_coils,extra_dim2,extra_dim1,nr_arms,nr_points]
+        elif data.ndim == 4:
+            extra_dim1 = data.shape[-3]
+            extra_dim2 = 1
+            data.shape = [nr_coils,extra_dim2,extra_dim1,nr_arms,nr_points]
+        elif data.ndim == 5:
+            extra_dim1 = data.shape[-3]
+            extra_dim2 = data.shape[-4]
+        elif data.ndim > 5:
+            self.log.warn("Not implemented yet")
 
-        # display sensitivity map to allow selection of ROI
-        image = np.copy(sensitivity_map_uncropped)
-        image = np.abs(image)
-        image = np.square(image)
-        image = np.mean(image, axis=0)
-        image = np.sqrt(image)
+        if sensitivity_map_uncropped is None:
+            # if cropping or image scaling sliders were changed then use the previously stored csm instead of calcluating a new one
+            if (('crop left' in self.widgetEvents()) or
+                ('crop right' in self.widgetEvents()) or
+                ('crop top' in self.widgetEvents()) or
+                ('crop bottom' in self.widgetEvents()) or
+                ('image ceiling' in self.widgetEvents()) ):
+                    csm = self.getData('masked and normalized sense map')
+                    image = self.getData('sum of square image').copy()
+                    if ( (csm is None) or (image is None) ):
+                        self.log.warn("This should not happen.")
+                        return 1
+                    csm_mtx = csm.shape[-1]
+            else:
+                # calculate auto-calibration B1 maps
+                coords = self.getData('coords').astype(np.float32, copy=False)
+                weights = self.getData('weights').astype(np.float32, copy=False)
+                if ( (coords is None) or (weights is None) ):
+                    self.log.warn("Either a sensitiviy map or coords and weights to calculate one is required")
+                    return 1
+                   
+                import bni.gridding.Kaiser2D_utils as kaiser2D
+                # parameters from UI
+                UI_width = self.getVal('Autocalibration Width (%)')
+                UI_taper = self.getVal('Autocalibration Taper (%)')
+                UI_mask_floor = self.getVal('Mask Floor (% of max mag)')
+                UI_average_csm = self.getVal('Dynamic data - average all dynamics for csm')
+                csm_mtx = np.int(0.01 * UI_width * self.getVal('mtx'))
+                
+                if coords.shape[-3]>100:
+                    is_GoldenAngle_data = True
+                else:
+                    is_GoldenAngle_data = False
+                if param is not None:
+                    if 'spDYN_GOLDANGLE_ON' in param:
+                        if param['spDYN_GOLDANGLE_ON'] == 1:
+                            is_GoldenAngle_data = True
+                        else:
+                            is_GoldenAngle_data = False
+                if is_GoldenAngle_data:
+                    nr_arms_cms = self.getVal('# golden angle dynamics for csm')
+                else:
+                    nr_arms_cms = nr_arms
+                csm_data = data[...,0:nr_arms_cms,:]
+
+                # oversampling: Oversample at the beginning and crop at the end
+                oversampling_ratio = 2. #1.375
+                mtx = np.int(csm_mtx * oversampling_ratio)
+                if mtx%2:
+                    mtx+=1
+                if oversampling_ratio > 1:
+                    mtx_min = np.int((mtx-csm_mtx)/2)
+                    mtx_max = mtx_min + csm_mtx
+                else:
+                    mtx_min = 0
+                    mtx_max = mtx
+
+                # average dynamics or cardiac phases for csm
+                if ( (extra_dim1 > 1) and UI_average_csm ):
+                    csm_data = np.sum(csm_data, axis=2)
+                    extra_dim1_csm = 1
+                    csm_data.shape = [nr_coils, extra_dim2, extra_dim1_csm, nr_arms_cms, nr_points]
+                else:
+                    extra_dim1_csm = extra_dim1
+
+                # coords dimensions: (add 1 dimension as they could have another dimension for golden angle dynamics
+                if coords.ndim == 3:
+                    coords.shape = [1,nr_arms,nr_points,2]
+                    weights.shape = [1,nr_arms,nr_points]
         
+                # create low resolution csm
+                # cropping the data will make gridding and FFT much faster
+                magnitude_one_interleave = np.zeros(nr_points)
+                for x in range(nr_points):
+                    magnitude_one_interleave[x] = np.sqrt( coords[0,0,x,0]**2 + coords[0,0,x,1]**2)
+                within_csm_width_radius = magnitude_one_interleave[:] < (0.01 * UI_width * 0.5) # for BNI spirals should be 0.45 instead of 0.5
+                nr_points_csm_width = within_csm_width_radius.sum()
+                
+                # now set the dimension lists
+                out_dims_grid = [nr_coils, extra_dim2, extra_dim1_csm, mtx, nr_arms_cms, nr_points_csm_width]
+                out_dims_fft = [nr_coils, extra_dim2, extra_dim1_csm, mtx, mtx]
+
+                csm_data = csm_data[...,0:nr_points_csm_width]
+                csm_coords = 1. / (0.01 * UI_width) * coords[...,0:nr_arms_cms,0:nr_points_csm_width,:]
+                csm_weights = weights[...,0:nr_arms_cms,0:nr_points_csm_width]
+
+                # pre-calculate Kaiser-Bessel kernel
+                kernel_table_size = 800
+                kernel = kaiser2D.kaiserbessel_kernel( kernel_table_size, oversampling_ratio)
+                
+                # pre-calculate the rolloff for the spatial domain
+                roll = kaiser2D.rolloff2D(mtx, kernel)
+                # Grid
+                gridded_kspace = kaiser2D.grid2D(csm_data, csm_coords, csm_weights, kernel, out_dims_grid)
+                # filter k-space
+                win = kaiser2D.window2(gridded_kspace.shape[-2:], windowpct=UI_taper, widthpct=100)
+                gridded_kspace *= win
+                # FFT
+                image_domain = kaiser2D.fft2D(gridded_kspace, dir=0, out_dims_fft=out_dims_fft)
+                # rolloff
+                image_domain *= roll
+                # crop to original matrix size
+                csm = image_domain[...,mtx_min:mtx_max,mtx_min:mtx_max]
+                # normalize by rms (better would be to use a whole body coil image
+                csm_rms = np.sqrt(np.sum(np.abs(csm)**2, axis=0))
+                csm = csm / csm_rms
+                # zero out points that are below mask threshold
+                thresh = 0.01 * UI_mask_floor * csm_rms.max()
+                csm *= csm_rms > thresh
+                # for ROI selection use csm_rms, which still has some contrast
+                image = csm_rms
+                image.shape = [csm_mtx,csm_mtx]
+                image_sos = image.copy()
+                self.setData('sum of square image', image_sos)
+        else:
+            csm = sensitivity_map_uncropped
+            csm_mtx = csm.shape[-1]
+            # create sum-of-squares of sensitivity map to allow selection of ROI
+            image = np.copy(csm)
+            image = np.sqrt(np.sum(np.abs(image)**2, axis=0))
+            image.shape = [csm_mtx,csm_mtx]
+        self.setData('masked and normalized sense map', csm)
+
+        # display sum-of-squares of sensitivity map to allow selection of ROI
         data_max = image.max()
-        image = np.clip(image, 0.1, data_max)
         data_min = image.min()
-        
-        sensitivity_map_uncropped = np.divide( sensitivity_map_uncropped, image )
-        mask = image > 0.02 * data_max
-        sensitivity_map_uncropped = np.multiply( sensitivity_map_uncropped, mask )
-        
+
         image[:, crop_left-1] = data_max
         image[:, crop_right-1] = data_max
         image[crop_top-1, :] = data_max
@@ -133,7 +308,8 @@ class ExternalNode(gpi.NodeAPI):
         self.setAttr('image', val=image2)
 
         # crop sensitivity map
-        sensitivity_map = sensitivity_map_uncropped[:,crop_top-1:crop_bottom,crop_left-1:crop_right]
+        csm.shape = [nr_coils, csm_mtx, csm_mtx]
+        sensitivity_map = csm[:,crop_top-1:crop_bottom,crop_left-1:crop_right]
 
         # get sizes
         # number of channels n
@@ -188,19 +364,13 @@ class ExternalNode(gpi.NodeAPI):
             self.log.debug("after A")
 
             # Compress the data
-            if data.ndim == 4:
-                out = np.zeros([m,data.shape[-3],data.shape[-2],data.shape[-1]],dtype=data.dtype)
-                for phase in range(data.shape[-3]):
-                    for arm in range(data.shape[-2]):
-                        for point in range(data.shape[-1]):
-                            #print A.shape, out[:,phase,arm,point].shape, (np.dot(A, data[:,phase,arm,point])).shape
-                            out[:,phase,arm,point] = np.dot(A, data[:,phase,arm,point])
-            elif data.ndim == 3:
-                out = np.zeros([m,data.shape[-2],data.shape[-1]],dtype=data.dtype)
-                for arm in range(data.shape[-2]):
-                    for point in range(data.shape[-1]):
-                        out[:,arm,point] = np.dot(A, data[:,arm,point])
-
+            if data.ndim == 5:
+                out = np.zeros([m,extra_dim2,extra_dim1,nr_arms,nr_points],dtype=data.dtype)
+                for extra2 in range(extra_dim2):
+                    for extra1 in range(extra_dim1):
+                        for arm in range(nr_arms):
+                            for point in range(nr_points):
+                                out[:,extra2,extra1,arm,point] = np.dot(A, data[:,extra2,extra1,arm,point])
 
             # SETTING PORT INFO
             self.setData('compressed data', out)
@@ -210,7 +380,6 @@ class ExternalNode(gpi.NodeAPI):
             # end of compute
             self.setAttr('compute', val=False)
     
-        self.setData('masked and normalized sense map', sensitivity_map_uncropped)
 
         return 0
 
