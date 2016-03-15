@@ -373,7 +373,7 @@ class ExternalNode(gpi.NodeAPI):
                                 out[:,extra2,extra1,arm,point] = np.dot(A, data[:,extra2,extra1,arm,point])
 
             # SETTING PORT INFO
-            self.setData('compressed data', out)
+            self.setData('compressed data', np.squeeze(out))
             self.setData('A', A)
             self.setData('noise covariance', noise_cv_matrix)
     
