@@ -41,12 +41,19 @@ class ExternalNode(gpi.NodeAPI):
         self.addOutPort('noise covariance', 'NPYarray')
         self.addOutPort('masked and normalized sense map', 'NPYarray')
         self.addOutPort('sum of square image', 'NPYarray')
+        self.addOutPort('debug', 'NPYarray')
 
     
     def validate(self):
         data=self.getData('data')
         coords=self.getData('coords')
         param = self.getData('params_in')
+        
+        if coords is not None:
+            if coords.shape[-1] != 2:
+                self.log.warn("Currently only for 2D data")
+                return 1
+
         if param is not None:
             if ( ('spFOVXY' in param) and ('spRESXY' in param) ):
                 mtx_xy = 1.25*float(param['spFOVXY'][0])/float(param['spRESXY'][0])
@@ -119,6 +126,7 @@ class ExternalNode(gpi.NodeAPI):
         from scipy import linalg
 
         self.log.node("Virtual Channels node running compute()")
+        twoD_or_threeD = 2
 
         # GETTING WIDGET INFO
         image_ceiling = self.getVal('image ceiling')
@@ -156,11 +164,13 @@ class ExternalNode(gpi.NodeAPI):
 
         if sensitivity_map_uncropped is None:
             # if cropping or image scaling sliders were changed then use the previously stored csm instead of calcluating a new one
-            if (('crop left' in self.widgetEvents()) or
+            has_csm_been_calculated = self.getData('sum of square image')
+            if ( (has_csm_been_calculated is not None) and
+                ( ('crop left' in self.widgetEvents()) or
                 ('crop right' in self.widgetEvents()) or
                 ('crop top' in self.widgetEvents()) or
                 ('crop bottom' in self.widgetEvents()) or
-                ('image ceiling' in self.widgetEvents()) ):
+                ('image ceiling' in self.widgetEvents()) ) ):
                     csm = self.getData('masked and normalized sense map')
                     image = self.getData('sum of square image').copy()
                     if ( (csm is None) or (image is None) ):
@@ -221,7 +231,7 @@ class ExternalNode(gpi.NodeAPI):
 
                 # coords dimensions: (add 1 dimension as they could have another dimension for golden angle dynamics
                 if coords.ndim == 3:
-                    coords.shape = [1,nr_arms,nr_points,2]
+                    coords.shape = [1,nr_arms,nr_points,twoD_or_threeD]
                     weights.shape = [1,nr_arms,nr_points]
         
                 # create low resolution csm
@@ -310,6 +320,7 @@ class ExternalNode(gpi.NodeAPI):
         # crop sensitivity map
         csm.shape = [nr_coils, csm_mtx, csm_mtx]
         sensitivity_map = csm[:,crop_top-1:crop_bottom,crop_left-1:crop_right]
+        self.setData('debug', np.squeeze(sensitivity_map))
 
         # get sizes
         # number of channels n
