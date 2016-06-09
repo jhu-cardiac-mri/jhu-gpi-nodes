@@ -19,6 +19,7 @@ class ExternalNode(gpi.NodeAPI):
         self.addWidget('Slider', 'crop right')
         self.addWidget('Slider', 'crop top')
         self.addWidget('Slider', 'crop bottom')
+        self.addWidget('PushButton', 'reset compute button each time', toggle=True, val=1, collapsed=True)
         self.addWidget('PushButton', 'compute', toggle=True)
         self.addWidget('SpinBox', 'virtual channels', immediate=True, val=12)
         self.addWidget('Slider', 'Autocalibration Width (%)', val=10, min=0, max=100)
@@ -134,6 +135,7 @@ class ExternalNode(gpi.NodeAPI):
         crop_right = self.getVal('crop right')
         crop_top = self.getVal('crop top')
         crop_bottom = self.getVal('crop bottom')
+        reset_compute_button = self.getVal('reset compute button each time')
         compute = self.getVal('compute')
         # number of virtual channels m
         m = self.getVal('virtual channels')
@@ -389,7 +391,8 @@ class ExternalNode(gpi.NodeAPI):
             self.setData('noise covariance', noise_cv_matrix)
     
             # end of compute
-            self.setAttr('compute', val=False)
+            if reset_compute_button:
+                self.setAttr('compute', val=False)
     
 
         return 0
