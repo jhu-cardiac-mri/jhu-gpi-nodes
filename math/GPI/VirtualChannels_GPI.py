@@ -27,13 +27,12 @@ class ExternalNode(gpi.NodeAPI):
         self.addWidget('Slider', 'Mask Floor (% of max mag)', val=5, min=0, max=100)
         self.addWidget('Slider', '# golden angle dynamics for csm', val=150, min=0, max=1000)
         self.addWidget('PushButton', 'Dynamic data - average all dynamics for csm', toggle=True, button_title='ON', val=1)
-        
+        self.addWidget('SpinBox','SDC Iterations',val=10, min=1)
 
         # IO Ports
         self.addInPort('data', 'NPYarray', dtype=[np.complex64, np.complex128], obligation=gpi.REQUIRED)
         self.addInPort('noise', 'NPYarray', dtype=[np.complex64, np.complex128], obligation=gpi.REQUIRED)
         self.addInPort('coords', 'NPYarray', dtype=[np.float32, np.float64], obligation=gpi.OPTIONAL)
-        self.addInPort('weights', 'NPYarray', dtype=[np.float32, np.float64], obligation=gpi.OPTIONAL)
         self.addInPort('sensitivity map', 'NPYarray', dtype=[np.complex64, np.complex128], obligation=gpi.OPTIONAL)
         self.addInPort('params_in', 'DICT', obligation = gpi.OPTIONAL)
 
@@ -75,6 +74,7 @@ class ExternalNode(gpi.NodeAPI):
             self.setAttr('Autocalibration Width (%)', visible=True)
             self.setAttr('Autocalibration Taper (%)', visible=True)
             self.setAttr('Mask Floor (% of max mag)', visible=True)
+            self.setAttr('SDC Iterations', visible=True)
             if data.ndim > 3:
                 self.setAttr('Dynamic data - average all dynamics for csm', visible=True)
             else:
@@ -86,6 +86,7 @@ class ExternalNode(gpi.NodeAPI):
             self.setAttr('Autocalibration Taper (%)', visible=False)
             self.setAttr('Mask Floor (% of max mag)', visible=False)
             self.setAttr('Dynamic data - average all dynamics for csm', visible=False)
+            self.setAttr('SDC Iterations', visible=False)
             csm_mtx = csm.shape[-1]
         
         if ( (len(self.portEvents() ) > 0) or ('Autocalibration Width (%)' in self.widgetEvents()) ):
@@ -130,6 +131,7 @@ class ExternalNode(gpi.NodeAPI):
         twoD_or_threeD = 2
 
         # GETTING WIDGET INFO
+        mtx_xy = self.getVal('mtx')
         image_ceiling = self.getVal('image ceiling')
         crop_left = self.getVal('crop left')
         crop_right = self.getVal('crop right')
@@ -139,7 +141,8 @@ class ExternalNode(gpi.NodeAPI):
         compute = self.getVal('compute')
         # number of virtual channels m
         m = self.getVal('virtual channels')
-
+        numiter = self.getVal('SDC Iterations')
+        
         # GETTING PORT INFO
         data = self.getData('data').astype(np.complex64, copy=False)
         noise = self.getData('noise')
@@ -182,18 +185,17 @@ class ExternalNode(gpi.NodeAPI):
             else:
                 # calculate auto-calibration B1 maps
                 coords = self.getData('coords').astype(np.float32, copy=False)
-                weights = self.getData('weights').astype(np.float32, copy=False)
-                if ( (coords is None) or (weights is None) ):
-                    self.log.warn("Either a sensitiviy map or coords and weights to calculate one is required")
+                if (coords is None):
+                    self.log.warn("Either a sensitiviy map or coords to calculate one is required")
                     return 1
-                   
+                
                 import bni.gridding.Kaiser2D_utils as kaiser2D
                 # parameters from UI
                 UI_width = self.getVal('Autocalibration Width (%)')
                 UI_taper = self.getVal('Autocalibration Taper (%)')
                 UI_mask_floor = self.getVal('Mask Floor (% of max mag)')
                 UI_average_csm = self.getVal('Dynamic data - average all dynamics for csm')
-                csm_mtx = np.int(0.01 * UI_width * self.getVal('mtx'))
+                csm_mtx = np.int(0.01 * UI_width * mtx_xy)
                 
                 if coords.shape[-3]>100:
                     is_GoldenAngle_data = True
@@ -234,8 +236,7 @@ class ExternalNode(gpi.NodeAPI):
                 # coords dimensions: (add 1 dimension as they could have another dimension for golden angle dynamics
                 if coords.ndim == 3:
                     coords.shape = [1,nr_arms,nr_points,twoD_or_threeD]
-                    weights.shape = [1,nr_arms,nr_points]
-        
+                
                 # create low resolution csm
                 # cropping the data will make gridding and FFT much faster
                 magnitude_one_interleave = np.zeros(nr_points)
@@ -250,7 +251,16 @@ class ExternalNode(gpi.NodeAPI):
 
                 csm_data = csm_data[...,0:nr_points_csm_width]
                 csm_coords = 1. / (0.01 * UI_width) * coords[...,0:nr_arms_cms,0:nr_points_csm_width,:]
-                csm_weights = weights[...,0:nr_arms_cms,0:nr_points_csm_width]
+                
+                # generate SDC based on number of arms and nr of points being used for csm
+                import core.gridding.sdc as sd
+                #csm_weights = sd.twod_sdcsp(csm_coords.squeeze().astype(np.float64), numiter, 0.01 * UI_taper, mtx)
+                cmtxdim = np.array([mtx,mtx],dtype=np.int64)
+                wates = np.ones((nr_arms_cms * nr_points_csm_width), dtype=np.float64)
+                coords_for_sdc = csm_coords.astype(np.float64)
+                coords_for_sdc.shape = [nr_arms_cms * nr_points_csm_width, twoD_or_threeD]
+                csm_weights = sd.twod_sdc(coords_for_sdc, wates, cmtxdim, numiter, 0.01 * UI_taper )
+                csm_weights.shape = [1,nr_arms_cms,nr_points_csm_width]
 
                 # pre-calculate Kaiser-Bessel kernel
                 kernel_table_size = 800
@@ -259,10 +269,11 @@ class ExternalNode(gpi.NodeAPI):
                 # pre-calculate the rolloff for the spatial domain
                 roll = kaiser2D.rolloff2D(mtx, kernel)
                 # Grid
-                gridded_kspace = kaiser2D.grid2D(csm_data, csm_coords, csm_weights, kernel, out_dims_grid)
-                # filter k-space
-                win = kaiser2D.window2(gridded_kspace.shape[-2:], windowpct=UI_taper, widthpct=100)
-                gridded_kspace *= win
+                gridded_kspace = kaiser2D.grid2D(csm_data, csm_coords, csm_weights.astype(np.float32), kernel, out_dims_grid)
+                self.setData('debug', gridded_kspace)
+                # filter k-space - not needed anymore as SDC taper is used now.
+                ## win = kaiser2D.window2(gridded_kspace.shape[-2:], windowpct=UI_taper, widthpct=100)
+                ## gridded_kspace *= win
                 # FFT
                 image_domain = kaiser2D.fft2D(gridded_kspace, dir=0, out_dims_fft=out_dims_fft)
                 # rolloff
@@ -322,7 +333,7 @@ class ExternalNode(gpi.NodeAPI):
         # crop sensitivity map
         csm.shape = [nr_coils, csm_mtx, csm_mtx]
         sensitivity_map = csm[:,crop_top-1:crop_bottom,crop_left-1:crop_right]
-        self.setData('debug', np.squeeze(sensitivity_map))
+        #self.setData('debug', np.squeeze(sensitivity_map))
 
         # get sizes
         # number of channels n
