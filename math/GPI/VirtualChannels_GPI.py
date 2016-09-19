@@ -166,6 +166,9 @@ class ExternalNode(gpi.NodeAPI):
             extra_dim2 = data.shape[-4]
         elif data.ndim > 5:
             self.log.warn("Not implemented yet")
+        
+        print("data shape: " + str(data.shape))
+        
 
         if sensitivity_map_uncropped is None:
             # if cropping or image scaling sliders were changed then use the previously stored csm instead of calcluating a new one
@@ -207,10 +210,12 @@ class ExternalNode(gpi.NodeAPI):
                             is_GoldenAngle_data = True
                         else:
                             is_GoldenAngle_data = False
+                print("is GoldenAngle: " + str(is_GoldenAngle_data))
                 if is_GoldenAngle_data:
                     nr_arms_cms = self.getVal('# golden angle dynamics for csm')
                 else:
                     nr_arms_cms = nr_arms
+                self.log.debug("nr_arms_cms: " + str(nr_arms_cms))
                 csm_data = data[...,0:nr_arms_cms,:]
 
                 # oversampling: Oversample at the beginning and crop at the end
@@ -232,6 +237,8 @@ class ExternalNode(gpi.NodeAPI):
                     csm_data.shape = [nr_coils, extra_dim2, extra_dim1_csm, nr_arms_cms, nr_points]
                 else:
                     extra_dim1_csm = extra_dim1
+                self.log.debug("csm_data shape: " + str(csm_data.shape))
+                self.log.debug("coords shape: " + str(coords.shape))
 
                 # coords dimensions: (add 1 dimension as they could have another dimension for golden angle dynamics
                 if coords.ndim == 3:
